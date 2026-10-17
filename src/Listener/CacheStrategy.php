@@ -24,6 +24,7 @@ use Override;
 use Traversable;
 
 use function array_keys;
+use function explode;
 use function header_remove;
 use function headers_sent;
 use function in_array;
@@ -37,6 +38,8 @@ use function method_exists;
 use function preg_match;
 use function serialize;
 use function sprintf;
+use function strtolower;
+use function trim;
 use function ucwords;
 
 use const PHP_SAPI;
@@ -106,6 +109,31 @@ final class CacheStrategy implements ListenerAggregateInterface
         private readonly string $sapi = PHP_SAPI,
     ) {
         $this->repository = new InMemoryRepository();
+    }
+
+    /**
+     * The directives of every Cache-Control header in a collection, lower-cased
+     * and without their arguments, so `Private="Set-Cookie"` reads as `private`.
+     * A header Laminas could not parse is read from its raw value.
+     *
+     * @return list<string>
+     */
+    private static function cacheControlDirectives(Headers $headers): array
+    {
+        /** @var array<int, HeaderInterface> $all */
+        $all        = iterator_to_array($headers);
+        $directives = [];
+        foreach ($all as $header) {
+            if ('cache-control' !== strtolower($header->getFieldName())) {
+                continue;
+            }
+
+            foreach (explode(',', $header->getFieldValue()) as $directive) {
+                $directives[] = strtolower(trim(explode('=', $directive)[0]));
+            }
+        }
+
+        return $directives;
     }
 
     /**
@@ -335,6 +363,10 @@ final class CacheStrategy implements ListenerAggregateInterface
     }
 
     /**
+     * Serve the stored page for the request, unless its Cache-Control asks
+     * for a fresh one (`no-cache`) or for nothing to be stored (`no-store`).
+     * A `no-cache` request still stores the page it gets, refreshing the entry.
+     *
      * @throws CacheException When the cache storage cannot be read.
      */
     public function onDispatch(MvcEvent $event): false|Response
@@ -357,8 +389,13 @@ final class CacheStrategy implements ListenerAggregateInterface
         }
 
         /** @var Headers $headers */
-        $headers = $request->getHeaders();
-        if ($headers->has('Range') || $headers->has('Authorization')) {
+        $headers    = $request->getHeaders();
+        $directives = self::cacheControlDirectives($headers);
+        if (
+            $headers->has('Range')
+            || $headers->has('Authorization')
+            || in_array('no-store', $directives, strict: true)
+        ) {
             return false;
         }
 
@@ -376,7 +413,7 @@ final class CacheStrategy implements ListenerAggregateInterface
         $this->ttl = self::ttlFrom($this->activeOptions['ttl'] ?? null);
         $this->key = $key;
 
-        if (! $cache->hasItem($key)) {
+        if (in_array('no-cache', $directives, strict: true) || ! $cache->hasItem($key)) {
             return false;
         }
 
@@ -401,6 +438,9 @@ final class CacheStrategy implements ListenerAggregateInterface
     }
 
     /**
+     * Store the response for the request onDispatch keyed, unless the
+     * response's Cache-Control says `no-store` or `private`.
+     *
      * @throws CacheException When the cache storage cannot be written.
      */
     public function onFinish(MvcEvent $event): void
@@ -416,7 +456,13 @@ final class CacheStrategy implements ListenerAggregateInterface
             return;
         }
 
-        self::sanitizeStoreHeaders($response->getHeaders());
+        $headers    = $response->getHeaders();
+        $directives = self::cacheControlDirectives($headers);
+        if (in_array('no-store', $directives, strict: true) || in_array('private', $directives, strict: true)) {
+            return;
+        }
+
+        self::sanitizeStoreHeaders($headers);
 
         $options     = $cache->getOptions();
         $previousTtl = $options->getTtl();

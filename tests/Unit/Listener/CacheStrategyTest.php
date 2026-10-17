@@ -78,6 +78,39 @@ final class CacheStrategyTest extends TestCase
     }
 
     /**
+     * Request Cache-Control headers under which no stored page is served.
+     *
+     * @return array<string, array{array<string, string>}>
+     */
+    public static function freshRequestProvider(): array
+    {
+        return [
+            'no-cache'                           => [['Cache-Control' => 'no-cache']],
+            'no-store'                           => [['Cache-Control' => 'no-store']],
+            'no-cache and no-store, as previews' => [['Cache-Control' => 'no-cache, no-store']],
+            'no-cache after another directive'   => [['Cache-Control' => 'max-age=0, no-cache']],
+            'directive in upper case'            => [['Cache-Control' => 'No-Cache']],
+            'header Laminas cannot parse'        => [['CACHE-CONTROL' => 'no-store, 1x']],
+        ];
+    }
+
+    /**
+     * A request's Cache-Control and whether the page it gets is stored.
+     *
+     * @return array<string, array{string, bool}>
+     */
+    public static function requestStoreDirectiveProvider(): array
+    {
+        return [
+            'no-cache refreshes the entry'       => ['no-cache', true],
+            'max-age=0 leaves storing alone'     => ['max-age=0', true],
+            'no-store'                           => ['no-store', false],
+            'no-cache and no-store, as previews' => ['no-cache, no-store', false],
+            'directive in upper case'            => ['NO-STORE', false],
+        ];
+    }
+
+    /**
      * @return array<string, array{string}>
      */
     public static function requestVariableProvider(): array
@@ -86,6 +119,33 @@ final class CacheStrategyTest extends TestCase
             'query' => ['query'],
             'post'  => ['post'],
             'files' => ['files'],
+        ];
+    }
+
+    /**
+     * Response headers and whether the response is stored.
+     *
+     * @return array<string, array{array<array-key, string>, bool}>
+     */
+    public static function responseDirectiveProvider(): array
+    {
+        return [
+            'no-store'                             => [['Cache-Control' => 'no-store'], false],
+            'private'                              => [['Cache-Control' => 'private'], false],
+            'private naming a field'               => [['Cache-Control' => 'private="Set-Cookie"'], false],
+            'no-store among other directives'      => [['Cache-Control' => 'public, max-age=60, no-store'], false],
+            'no-store and private, as previews'    => [['Cache-Control' => 'no-store, private'], false],
+            'directive in upper case'              => [['Cache-Control' => 'Private'], false],
+            'private in a second Cache-Control'    => [['Cache-Control: public', 'Cache-Control: private'], false],
+            'private after another header'         => [
+                ['Content-Type' => 'text/html', 'Cache-Control' => 'private'],
+                false,
+            ],
+            'header Laminas cannot parse'          => [['CACHE-CONTROL' => 'private, 1x'], false],
+            'public'                               => [['Cache-Control' => 'public, max-age=60'], true],
+            'no-cache'                             => [['Cache-Control' => 'no-cache'], true],
+            'directive named in some other header' => [['X-Cache-Hint' => 'no-store'], true],
+            'no Cache-Control'                     => [[], true],
         ];
     }
 
@@ -634,6 +694,21 @@ final class CacheStrategyTest extends TestCase
         );
     }
 
+    /**
+     * @param array<string, string> $headers
+     */
+    #[Test]
+    #[DataProvider('freshRequestProvider')]
+    public function servesNoStoredPageWhenTheRequestAsksForAFreshOne(array $headers): void
+    {
+        $storage = $this->storageHolding($this->okResponse());
+        $storage->expects($this->never())->method('getItem');
+
+        static::assertFalse(
+            $this->listener($storage)->onDispatch($this->event($this->request(headers: $headers))),
+        );
+    }
+
     #[Test]
     public function storesTheFinishedResponseOnAMissWithSanitisedHeaders(): void
     {
@@ -656,6 +731,37 @@ final class CacheStrategyTest extends TestCase
             ["Content-Type: text/html\r\nVary: Accept-Encoding, Cookie\r\nX-PK-Cache: MISS\r\n"],
             array_map(static fn(HttpResponse $r): string => $r->getHeaders()->toString(), $stored),
         );
+    }
+
+    #[Test]
+    #[DataProvider('requestStoreDirectiveProvider')]
+    public function storesTheFreshPageUnlessTheRequestSaysNoStore(string $cacheControl, bool $stored): void
+    {
+        $responses = [];
+        $listener  = $this->listener($this->recordingStorage($responses));
+
+        $listener->onDispatch($this->event($this->request(headers: ['Cache-Control' => $cacheControl])));
+        $listener->onFinish($this->finishEvent($this->okResponse()));
+
+        static::assertSame($stored, [] !== $responses);
+    }
+
+    /**
+     * @param array<array-key, string> $headers
+     */
+    #[Test]
+    #[DataProvider('responseDirectiveProvider')]
+    public function storesTheResponseUnlessItsCacheControlForbidsIt(array $headers, bool $stored): void
+    {
+        $responses = [];
+        $listener  = $this->listener($this->recordingStorage($responses));
+        $response  = $this->okResponse();
+        $response->getHeaders()->addHeaders($headers);
+
+        $listener->onDispatch($this->event($this->request()));
+        $listener->onFinish($this->finishEvent($response));
+
+        static::assertSame($stored, [] !== $responses);
     }
 
     #[Test]

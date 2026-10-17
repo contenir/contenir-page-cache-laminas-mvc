@@ -35,6 +35,26 @@ final class CacheStrategyTest extends TestCase
         static::assertSame(0, iterator_count($this->storage->getIterator()));
     }
 
+    #[Test]
+    public function neitherServesNorStoresAPreviewOfAStoredPage(): void
+    {
+        $this->dispatch($this->event($this->request()));
+        $this->finish($this->okResponse('<p>published</p>'));
+        $preview = $this->okResponse('<p>unsaved</p>');
+        $preview->getHeaders()->addHeaders(['Cache-Control' => 'no-store, private']);
+
+        $previewHit = $this->dispatch($this->event($this->request(headers: [
+            'Cache-Control' => 'no-cache, no-store',
+        ])));
+        $this->finish($preview);
+        $visitorHit = $this->dispatch($this->event($this->request()));
+
+        static::assertSame(
+            [false, '<p>published</p>'],
+            [$previewHit, $visitorHit instanceof Response ? $visitorHit->getContent() : null],
+        );
+    }
+
     /**
      * Once PHP has sent its headers, removing the Pragma and Expires it queued
      * can only warn, so the hit path leaves them alone. Sending headers takes

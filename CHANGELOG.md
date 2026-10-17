@@ -4,6 +4,15 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project
 adheres to [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Added
+
+- `CacheStrategy` honours `Cache-Control` as well as `pagecache.disable`.
+  A request with `no-cache` or `no-store` is never served a stored page,
+  and nothing is stored for a request with `no-store` or a response with
+  `no-store` or `private`.
+
 ## [2.0.0-RC1] - 2026-10-07
 
 The first 2.0 pre-release, published as

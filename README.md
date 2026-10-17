@@ -225,6 +225,22 @@ the response is not safe to cache (CSRF tokens, flash messages,
 authenticated banners) can fire the event and the listener will
 short-circuit `onFinish` for that request.
 
+The listener also honours the HTTP `Cache-Control` directives, so a
+caller can ask it to stand aside without knowing about the event:
+
+| Directive  | On the request                                           | On the response  |
+|------------|----------------------------------------------------------|------------------|
+| `no-cache` | No stored page is served; the fresh page is still stored | Stored as usual  |
+| `no-store` | No stored page is served and the page is not stored      | Not stored       |
+| `private`  | Ignored                                                  | Not stored       |
+
+Directive names are matched case-insensitively, across every
+`Cache-Control` header, and with any argument ignored
+(`private="Set-Cookie"` counts as `private`). Only headers in the Laminas
+request and response objects count: the `Cache-Control` that PHP's
+session cache limiter emits directly through `header()` does not stop a
+page being stored.
+
 ## What's in the cache key
 
 The key is `md5()` of:
@@ -263,6 +279,9 @@ The listener short-circuits in `onDispatch` for any of:
   as if they were full)
 - `Authorization:` request header present (per-user credentials ⇒
   per-user response)
+- `Cache-Control: no-store` on the request (nothing is looked up or
+  stored); `Cache-Control: no-cache` skips only the lookup, and the
+  fresh response replaces the stored one
 
 - a disabled listener, a missing cache storage, or the `cli` SAPI
 
@@ -271,7 +290,8 @@ response that is not a `Laminas\Http\PhpEnvironment\Response`, is treated as
 a miss, and the fresh response replaces the entry.
 
 …and in `onFinish` for any response with a status code other than
-`200 OK` (catches `304`, `301`/`302` redirects, `404`/`5xx` errors).
+`200 OK` (catches `304`, `301`/`302` redirects, `404`/`5xx` errors), or
+whose `Cache-Control` says `no-store` or `private`.
 
 These are unconditional — there is no config flag to turn them off.
 If you have a route that genuinely needs to cache a non-200 response,
